@@ -1,0 +1,269 @@
+
+<!DOCTYPE HTML5>
+<html>
+<head>
+	<title>midi</title>
+	<style>
+		html, body { background: #444; padding: 2% 50px; color: #bada55; font-family: sans-serif; }
+		body>div {
+			display: inline-block; width: 100%; clear:both;
+		}
+		.item { 
+			display: inline-block; float: left;
+			padding: 10px;	font-size: 200%; margin: 5px;
+		}
+
+		#inputs:before {content: "INPUTS: "; display: block; color: white; font-size: 300%; font-weight: bold; }
+		#inputs .item {
+			background: white; color: #444; 
+		}
+
+		#outputs:before {content: "OUTPUTS: ";  display: block; color: #c0ffe3; font-size: 300%; font-weight: bold; }
+		#outputs .item {
+			background: #c0ffe3; color: #444; 
+		}
+
+		#messages:before {content: "MESSAGES: ";  display: block; color: orange; font-size: 300%; font-weight: bold; }
+		#messages .item {
+			background: orange; color: #444;
+		}
+
+	</style>
+</head>
+<body>
+	<div id="inputs"></div>
+	<div id="outputs"></div>
+	<div id="messages"></div>
+
+	<script>
+	"use strict";
+	//MIDI Table
+	var _commands = [];
+		for( var i = 128; i <= 255; i++ ) {
+			
+			if( i < 256 ) { _commands[i] = "Sys"; }
+			if( i < 240 ) { _commands[i] = "P.Bend";  }
+			if( i < 224 ) { _commands[i] = "C.Aftertouch";  }
+			if( i < 208 ) { _commands[i] = "Program";  }
+			if( i < 192 ) { _commands[i] = "Knob";  }
+			if( i < 176 ) { _commands[i] = "P.Aftertouch";  }
+			if( i < 160 ) { _commands[i] = "Note On";  }
+			if( i < 144 ) { _commands[i] = "Note Off";  }
+
+		}
+	//Synth
+	var Synth = function(ctx, out, props) {
+		var activeNotes = [];
+		var oscs = [];
+		var gas  = [];
+
+		var detune = 0;
+
+		var props = props || {};
+		var transpose = props.transpose || 0;
+		var gain = props.gain || 1;
+		var attack = props.attack || 0;
+		var release = props.release || 0;
+		var wave = props.waveform || 'sine';
+		var tune = props.tune || 0;
+		var pitchBendRange = props.pitchBendRange || 100;
+
+		this.setTune = function(tune) {
+			activeNotes.forEach ( function(osc) {
+				oscs[osc].detune.value = ((tune-64)/64)*pitchBendRange;
+			});
+		}
+
+		this.setAttack = function(att) {
+			attack = (att/127)*1500;
+		}
+
+		this.setRelease = function(rel) {
+			release = (rel/127)*1500;
+		}
+
+		this.playNote = function(midi,ga){
+			var osc = ctx.createOscillator();
+			var g = ctx.createGain(ga);
+			var max_g = (ga/150)*gain; //Lowering Maximum gain (1 is really loud)
+
+			g.gain.value = 0;
+			osc.frequency.value = note(midi + transpose) + tune;
+			osc.type = wave;
+			osc.connect(g);
+			g.connect(out);
+			osc.start();
+			//if( attack !== 0 ) {
+				g.gain.linearRampToValueAtTime(0, ctx.currentTime);
+				g.gain.linearRampToValueAtTime(max_g, ctx.currentTime + (attack/1000));
+			//}
+
+			gas[midi] = g;
+			oscs[midi] = osc;
+			activeNotes.push(midi);
+		}
+
+		this.killNote = function(midi) {
+			if( release !== 0 ) { 
+				gas[midi].gain.linearRampToValueAtTime(gas[midi].gain.value, ctx.currentTime);
+				gas[midi].gain.linearRampToValueAtTime(0, ctx.currentTime + (release/1000));
+			}
+			oscs[midi].stop(ctx.currentTime + (release/1000));
+			oscs[midi] = undefined;
+
+			activeNotes.forEach( function(note) {
+				if(note == midi) activeNotes.splice(activeNotes.indexOf(midi),1);
+			})
+		}
+		return this;
+	}
+
+	function note(midi) {
+		return Math.pow(2, (midi-69)/12 ) * 440;
+	}
+
+	//MIDI module
+	var MIDI = function() {
+		var $ = this;
+		//Privates
+		var success, error;
+		//Public
+		$.inputs = [];
+	    $.outputs= [];
+
+		this.on = function(eve, func) {
+			switch(eve) {
+				case 'success': 
+					$.success = func;
+					break;
+				case 'error':
+					$.error = func;
+					break;
+			}
+			return this;
+		}
+
+		this.start = function() {
+			try {
+				navigator.requestMIDIAccess().then(function(midi) {
+
+					for( var i = midi.inputs.values(), o = i.next(); !o.done; o = i.next() ) {
+						$.inputs.push(o.value);
+					}
+
+					for( var i = midi.outputs.values(), o = i.next(); !o.done; o = i.next() ) {
+						$.outputs.push(o.value);
+					}
+
+					$.success(midi);
+					window.midi = {};
+
+				}, function(err) {
+					$.error(err, "Cannot Access MIDI.");
+				})
+			} catch(e) {
+				$.error(err, "No MIDI Support.");
+			}
+			return this;
+		}
+
+		return this;
+	};
+
+
+	var hub = new MIDI();
+	var messages = document.getElementById("messages");
+	var inputs = document.getElementById("inputs");
+	var outputs = document.getElementById("outputs");
+
+	hub
+		.on('success', function() {
+			hub.inputs.forEach( function(each) {
+				addList(inputs, each.name);
+			});
+			hub.outputs.forEach( function(each) {
+				addList(outputs, each.name);
+			});
+			listener(hub.inputs);
+		})
+		.on('error', function(err,msg) {
+			alert(msg);
+			console.log(err);
+		})
+		.start();
+
+
+
+	function addList(list,msg) {
+		var li = document.createElement("div");
+			li.classList.add("item");
+			li.innerHTML = msg;
+		list.appendChild(li);
+	}
+
+	function deleteList(list) {
+		for( var i=0; i < list.children.length; i++ ) {
+			list.children[i].parentNode.removeChild(list.children[i]);
+		}
+	}
+
+	var aC = new AudioContext();
+	var Bi = aC.createBiquadFilter();
+		Bi.type = "lowpass";
+		Bi.Q.value = 0;
+		Bi.frequency.value = 5000;
+		Bi.connect(aC.destination);
+
+	var SyConfig = {
+		waveform: "square", transpose: 0,
+		gain: 0.5, attack: 2, release: 2,
+		bass_cut : 5000,
+		pitchBendRange: 1200
+	}
+	var Sy = new Synth(aC,Bi, SyConfig);
+
+
+	
+	function listener(inp) {
+		inp.forEach( function(input) {
+			input.onmidimessage = function(a) {
+				var data = a.data;
+				if (data[0] == 254 || data[0] == 248) return;
+				if (messages.children.length > 9 ) {
+					deleteList(messages);
+				}
+				addList(messages, _commands[data[0]]+ " "+data[1]+ " "+data[2]);
+
+				if( _commands[data[0]] == "Note On") {
+					Sy.playNote(data[1], data[2]);
+				}
+				if ( _commands[data[0]] == "Note Off") {
+					Sy.killNote(data[1]);
+				}
+				if( _commands[data[0]] == "P.Bend") {
+					Sy.setTune(data[2]);
+				}
+				if( _commands[data[0]] == "Knob" && data[1] == 73 ) {
+					Sy.setAttack(data[2]);
+				}
+				if( _commands[data[0]] == "Knob" && data[1] == 72 ) {
+					Sy.setRelease(data[2]);
+				}
+				if( _commands[data[0]] == "Knob" && data[1] == 74 ) {
+					SyConfig.bass_cut = 50 + (data[2]/127)* 14950;
+					Bi.frequency.value = 50 + (data[2]/127)* 14950;
+				}
+				if( _commands[data[0]] == "Knob" && data[1] == 71 ) {
+					Bi.Q.value = (data[2]/127) * 40;
+				}
+				if( _commands[data[0]] == "Knob" && data[1] == 1 ) {
+					Bi.frequency.value = ((SyConfig.bass_cut + ((data[2]/127)*6000)) < 50)? 50 : (SyConfig.bass_cut + (data[2]/127)*6000) ;
+				}
+			}
+		});
+	}
+
+
+	</script>
+</body>
+</html>
