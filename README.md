@@ -1,3 +1,0 @@
-# khoin.github.io
-
-stuff
